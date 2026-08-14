@@ -2,17 +2,16 @@ import express from 'express';
 import path from 'path';
 import fs from 'fs';
 import { createServer as createViteServer } from 'vite';
-import { DEFAULT_QUESTIONS, DEFAULT_QUIZ_CONFIG } from './src/data/defaultQuestions.ts';
-import { Question, QuizConfig, QuizSubmission, StudentAnswer, OptionKey, QuizStatistics } from './src/types.ts';
+import { DEFAULT_QUESTIONS, DEFAULT_QUIZ_CONFIG, DEFAULT_QUIZZES } from './src/data/defaultQuestions.ts';
+import { Question, QuizConfig, QuizSubmission, StudentAnswer, OptionKey, QuizStatistics, Quiz } from './src/types.ts';
 
 const app = express();
 const PORT = 3000;
 
 // Data directory and paths
 const DATA_DIR = path.join(process.cwd(), 'data');
-const QUESTIONS_FILE = path.join(DATA_DIR, 'questions.json');
+const QUIZZES_FILE = path.join(DATA_DIR, 'quizzes.json');
 const SUBMISSIONS_FILE = path.join(DATA_DIR, 'submissions.json');
-const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
 
 // Ensure data directory exists
 if (!fs.existsSync(DATA_DIR)) {
@@ -40,22 +39,56 @@ function writeJSONFile<T>(filePath: string, data: T): void {
   }
 }
 
-// In-memory caches synchronized with disk
-let currentQuestions: Question[] = readJSONFile<Question[]>(QUESTIONS_FILE, DEFAULT_QUESTIONS);
-if (!fs.existsSync(QUESTIONS_FILE) || currentQuestions.length === 0) {
-  currentQuestions = [...DEFAULT_QUESTIONS];
-  writeJSONFile(QUESTIONS_FILE, currentQuestions);
+// In-memory caches synchronized with persistent disk files
+let currentQuizzes: Quiz[] = readJSONFile<Quiz[]>(QUIZZES_FILE, DEFAULT_QUIZZES);
+if (!fs.existsSync(QUIZZES_FILE) || currentQuizzes.length === 0) {
+  currentQuizzes = JSON.parse(JSON.stringify(DEFAULT_QUIZZES));
+  writeJSONFile(QUIZZES_FILE, currentQuizzes);
 }
 
-let currentConfig: QuizConfig = readJSONFile<QuizConfig>(CONFIG_FILE, DEFAULT_QUIZ_CONFIG);
-if (!fs.existsSync(CONFIG_FILE)) {
-  writeJSONFile(CONFIG_FILE, currentConfig);
+// Ensure at least one quiz is marked active
+if (!currentQuizzes.some((q) => q.isActive)) {
+  if (currentQuizzes.length > 0) {
+    currentQuizzes[0].isActive = true;
+    writeJSONFile(QUIZZES_FILE, currentQuizzes);
+  }
 }
 
 let currentSubmissions: QuizSubmission[] = readJSONFile<QuizSubmission[]>(SUBMISSIONS_FILE, []);
 
 // Express middleware
 app.use(express.json({ limit: '10mb' }));
+
+// Helper to get active quiz
+function getActiveQuiz(): Quiz {
+  const active = currentQuizzes.find((q) => q.isActive);
+  if (active) return active;
+  if (currentQuizzes.length > 0) {
+    currentQuizzes[0].isActive = true;
+    writeJSONFile(QUIZZES_FILE, currentQuizzes);
+    return currentQuizzes[0];
+  }
+  // Fallback
+  const defaultQ: Quiz = {
+    id: 'quiz_default',
+    title: DEFAULT_QUIZ_CONFIG.title,
+    subjectCode: DEFAULT_QUIZ_CONFIG.subjectCode,
+    subjectName: DEFAULT_QUIZ_CONFIG.subjectName,
+    description: DEFAULT_QUIZ_CONFIG.description,
+    defaultTimeLimit: DEFAULT_QUIZ_CONFIG.defaultTimeLimit,
+    passingScorePercentage: DEFAULT_QUIZ_CONFIG.passingScorePercentage,
+    shuffleQuestions: false,
+    allowReviewAfterQuiz: true,
+    departmentName: 'Khoa Cơ khí - Xây dựng',
+    isActive: true,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    questions: DEFAULT_QUESTIONS,
+  };
+  currentQuizzes = [defaultQ];
+  writeJSONFile(QUIZZES_FILE, currentQuizzes);
+  return defaultQ;
+}
 
 // ----------------- AUTHENTICATION ROUTES ----------------- //
 
@@ -86,45 +119,86 @@ app.post('/api/auth/login', (req, res) => {
   });
 });
 
-// ----------------- API ROUTES ----------------- //
+// ----------------- STUDENT QUIZ API ROUTES ----------------- //
 
-// 1. Get Quiz Config & Questions for Students
-app.get('/api/quiz/info', (_req, res) => {
-  const sanitizedQuestions = currentQuestions.map((q, idx) => ({
+// 1. Get Quiz Info for Students (active or specified quizId)
+app.get('/api/quiz/info', (req, res) => {
+  const { quizId } = req.query as { quizId?: string };
+  let quiz: Quiz | undefined;
+
+  if (quizId) {
+    quiz = currentQuizzes.find((q) => q.id === quizId);
+  }
+  if (!quiz) {
+    quiz = getActiveQuiz();
+  }
+
+  const sanitizedQuestions = quiz.questions.map((q, idx) => ({
     id: q.id,
     orderNumber: idx + 1,
     questionText: q.questionText,
     options: q.options,
-    timeLimit: q.timeLimit || currentConfig.defaultTimeLimit || 10,
+    timeLimit: q.timeLimit || quiz!.defaultTimeLimit || 10,
     category: q.category,
   }));
 
+  const config: QuizConfig = {
+    id: quiz.id,
+    title: quiz.title,
+    subjectCode: quiz.subjectCode,
+    subjectName: quiz.subjectName,
+    description: quiz.description,
+    defaultTimeLimit: quiz.defaultTimeLimit,
+    passingScorePercentage: quiz.passingScorePercentage,
+    shuffleQuestions: quiz.shuffleQuestions,
+    allowReviewAfterQuiz: quiz.allowReviewAfterQuiz,
+    departmentName: quiz.departmentName,
+  };
+
   res.json({
-    config: currentConfig,
-    totalQuestions: currentQuestions.length,
+    quizId: quiz.id,
+    config,
+    totalQuestions: quiz.questions.length,
     questions: sanitizedQuestions,
+    availableQuizzes: currentQuizzes.map((q) => ({
+      id: q.id,
+      title: q.title,
+      subjectCode: q.subjectCode,
+      subjectName: q.subjectName,
+      questionCount: q.questions.length,
+      isActive: q.isActive,
+    })),
   });
 });
 
-// 2. Submit Quiz Answers
+// 2. Submit Quiz Answers (Permanently saves result with quiz metadata)
 app.post('/api/quiz/submit', (req, res) => {
-  const { studentInfo, answers } = req.body as {
+  const { studentInfo, answers, quizId } = req.body as {
     studentInfo: { fullName: string; studentGroup: string; studentId?: string };
     answers: { questionId: string; selectedOption: OptionKey | null; timeSpentSeconds: number }[];
+    quizId?: string;
   };
 
   if (!studentInfo || !studentInfo.fullName || !studentInfo.studentGroup) {
     return res.status(400).json({ error: 'Thông tin sinh viên không đầy đủ' });
   }
 
+  let quiz: Quiz | undefined;
+  if (quizId) {
+    quiz = currentQuizzes.find((q) => q.id === quizId);
+  }
+  if (!quiz) {
+    quiz = getActiveQuiz();
+  }
+
   const evaluatedAnswers: StudentAnswer[] = [];
   let correctCount = 0;
   let totalTimeSeconds = 0;
 
-  currentQuestions.forEach((q, idx) => {
+  quiz.questions.forEach((q, idx) => {
     const studentAns = (answers || []).find((a) => a.questionId === q.id);
     const selectedOption = studentAns ? studentAns.selectedOption : null;
-    const timeSpent = studentAns ? studentAns.timeSpentSeconds : q.timeLimit;
+    const timeSpent = studentAns ? studentAns.timeSpentSeconds : (q.timeLimit || 10);
     totalTimeSeconds += timeSpent;
 
     const isCorrect = selectedOption === q.correctOption;
@@ -144,7 +218,7 @@ app.post('/api/quiz/submit', (req, res) => {
     });
   });
 
-  const totalQuestions = currentQuestions.length || 10;
+  const totalQuestions = quiz.questions.length || 1;
   const scoreOutOfTen = Number(((correctCount / totalQuestions) * 10).toFixed(1));
   const percentage = Math.round((correctCount / totalQuestions) * 100);
 
@@ -155,10 +229,14 @@ app.post('/api/quiz/submit', (req, res) => {
   else if (scoreOutOfTen >= 5.0) grade = 'Trung bình';
   else grade = 'Chưa đạt';
 
-  const passed = scoreOutOfTen >= (currentConfig.passingScorePercentage / 10);
+  const passed = scoreOutOfTen >= ((quiz.passingScorePercentage || 50) / 10);
 
   const submission: QuizSubmission = {
     id: `sub_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+    quizId: quiz.id,
+    quizTitle: quiz.title,
+    subjectCode: quiz.subjectCode,
+    subjectName: quiz.subjectName,
     studentInfo: {
       fullName: studentInfo.fullName.trim(),
       studentGroup: studentInfo.studentGroup.trim(),
@@ -184,18 +262,28 @@ app.post('/api/quiz/submit', (req, res) => {
   });
 });
 
-// Helper for calculating stats
-function calculateStatistics(): QuizStatistics {
-  const total = currentSubmissions.length;
+// ----------------- ADMIN STATS CALCULATOR ----------------- //
+
+function calculateStatistics(targetQuizId?: string): QuizStatistics {
+  const filteredSubmissions = targetQuizId && targetQuizId !== 'ALL'
+    ? currentSubmissions.filter((s) => s.quizId === targetQuizId)
+    : currentSubmissions;
+
+  const targetQuiz = targetQuizId && targetQuizId !== 'ALL'
+    ? currentQuizzes.find((q) => q.id === targetQuizId)
+    : getActiveQuiz();
+
+  const total = filteredSubmissions.length;
   if (total === 0) {
     return {
+      quizId: targetQuizId,
       totalSubmissions: 0,
       averageScoreOutOfTen: 0,
       passRatePercentage: 0,
       highestScore: 0,
       lowestScore: 0,
       groupStats: [],
-      questionAccuracy: currentQuestions.map((q, idx) => ({
+      questionAccuracy: (targetQuiz?.questions || []).map((q, idx) => ({
         questionId: q.id,
         orderNumber: idx + 1,
         questionText: q.questionText,
@@ -207,16 +295,16 @@ function calculateStatistics(): QuizStatistics {
     };
   }
 
-  const scores = currentSubmissions.map((s) => s.scoreOutOfTen);
+  const scores = filteredSubmissions.map((s) => s.scoreOutOfTen);
   const avgScore = Number((scores.reduce((a, b) => a + b, 0) / total).toFixed(2));
-  const passCount = currentSubmissions.filter((s) => s.passed).length;
+  const passCount = filteredSubmissions.filter((s) => s.passed).length;
   const passRate = Math.round((passCount / total) * 100);
   const highest = Math.max(...scores);
   const lowest = Math.min(...scores);
 
   // Group stats
   const groupMap = new Map<string, { totalScore: number; count: number }>();
-  currentSubmissions.forEach((s) => {
+  filteredSubmissions.forEach((s) => {
     const group = s.studentInfo.studentGroup || 'Chung';
     const entry = groupMap.get(group) || { totalScore: 0, count: 0 };
     entry.totalScore += s.scoreOutOfTen;
@@ -231,12 +319,12 @@ function calculateStatistics(): QuizStatistics {
   }));
 
   // Question accuracy
-  const questionAccuracy = currentQuestions.map((q, idx) => {
+  const questionAccuracy = (targetQuiz?.questions || []).map((q, idx) => {
     let correctCount = 0;
     let totalAttempts = 0;
     const distribution: Record<OptionKey, number> = { A: 0, B: 0, C: 0, D: 0 };
 
-    currentSubmissions.forEach((sub) => {
+    filteredSubmissions.forEach((sub) => {
       const ans = sub.answers.find((a) => a.questionId === q.id);
       if (ans) {
         totalAttempts += 1;
@@ -259,6 +347,7 @@ function calculateStatistics(): QuizStatistics {
   });
 
   return {
+    quizId: targetQuizId,
     totalSubmissions: total,
     averageScoreOutOfTen: avgScore,
     passRatePercentage: passRate,
@@ -269,17 +358,184 @@ function calculateStatistics(): QuizStatistics {
   };
 }
 
-// 3. Admin: Get all Submissions & Stats
-app.get('/api/admin/submissions', (_req, res) => {
-  const stats = calculateStatistics();
+// ----------------- ADMIN MULTI-QUIZ MANAGEMENT ROUTES ----------------- //
+
+// 3. Admin: Get all quizzes list
+app.get('/api/admin/quizzes', (_req, res) => {
   res.json({
-    submissions: currentSubmissions,
-    stats,
-    config: currentConfig,
+    quizzes: currentQuizzes,
+    activeQuizId: getActiveQuiz().id,
   });
 });
 
-// 4. Admin: Delete Single Submission
+// 4. Admin: Get single quiz
+app.get('/api/admin/quizzes/:id', (req, res) => {
+  const { id } = req.params;
+  const quiz = currentQuizzes.find((q) => q.id === id);
+  if (!quiz) {
+    return res.status(404).json({ error: 'Không tìm thấy bài kiểm tra' });
+  }
+  res.json({ quiz });
+});
+
+// 5. Admin: Create new quiz
+app.post('/api/admin/quizzes', (req, res) => {
+  const body = req.body as Partial<Quiz>;
+  if (!body.title?.trim() || !body.subjectCode?.trim()) {
+    return res.status(400).json({ error: 'Vui lòng nhập tên bài kiểm tra và mã môn học' });
+  }
+
+  const newQuiz: Quiz = {
+    id: `quiz_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+    title: body.title.trim(),
+    subjectCode: body.subjectCode.trim().toUpperCase(),
+    subjectName: body.subjectName?.trim() || body.title.trim(),
+    description: body.description?.trim() || 'Bài kiểm tra trắc nghiệm 10s',
+    defaultTimeLimit: body.defaultTimeLimit || 10,
+    passingScorePercentage: body.passingScorePercentage || 50,
+    shuffleQuestions: Boolean(body.shuffleQuestions),
+    allowReviewAfterQuiz: body.allowReviewAfterQuiz !== false,
+    departmentName: body.departmentName || 'Khoa Cơ khí - Xây dựng',
+    isActive: Boolean(body.isActive),
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    questions: Array.isArray(body.questions) && body.questions.length > 0 ? body.questions : [
+      {
+        id: `q_${Date.now()}_1`,
+        orderNumber: 1,
+        questionText: 'Nội dung câu hỏi số 1 (Vui lòng chỉnh sửa)?',
+        options: [
+          { key: 'A', text: 'Đáp án A mẫu' },
+          { key: 'B', text: 'Đáp án B mẫu' },
+          { key: 'C', text: 'Đáp án C mẫu' },
+          { key: 'D', text: 'Đáp án D mẫu' },
+        ],
+        correctOption: 'A',
+        explanation: 'Giải thích chi tiết cho câu hỏi 1.',
+        timeLimit: body.defaultTimeLimit || 10,
+        category: 'Tổng quan',
+      },
+    ],
+  };
+
+  if (newQuiz.isActive) {
+    currentQuizzes.forEach((q) => (q.isActive = false));
+  }
+
+  currentQuizzes.unshift(newQuiz);
+  writeJSONFile(QUIZZES_FILE, currentQuizzes);
+
+  res.json({ success: true, quiz: newQuiz, quizzes: currentQuizzes });
+});
+
+// 6. Admin: Update existing quiz
+app.put('/api/admin/quizzes/:id', (req, res) => {
+  const { id } = req.params;
+  const body = req.body as Partial<Quiz>;
+  const idx = currentQuizzes.findIndex((q) => q.id === id);
+
+  if (idx === -1) {
+    return res.status(404).json({ error: 'Không tìm thấy bài kiểm tra cần sửa' });
+  }
+
+  if (body.isActive) {
+    currentQuizzes.forEach((q) => (q.isActive = false));
+  }
+
+  currentQuizzes[idx] = {
+    ...currentQuizzes[idx],
+    ...body,
+    id,
+    updatedAt: new Date().toISOString(),
+    questions: body.questions ? body.questions.map((q, qIdx) => ({
+      ...q,
+      orderNumber: qIdx + 1,
+    })) : currentQuizzes[idx].questions,
+  };
+
+  writeJSONFile(QUIZZES_FILE, currentQuizzes);
+  res.json({ success: true, quiz: currentQuizzes[idx], quizzes: currentQuizzes });
+});
+
+// 7. Admin: Activate a Quiz
+app.post('/api/admin/quizzes/:id/activate', (req, res) => {
+  const { id } = req.params;
+  const quiz = currentQuizzes.find((q) => q.id === id);
+  if (!quiz) {
+    return res.status(404).json({ error: 'Không tìm thấy bài kiểm tra' });
+  }
+
+  currentQuizzes.forEach((q) => (q.isActive = q.id === id));
+  writeJSONFile(QUIZZES_FILE, currentQuizzes);
+
+  res.json({ success: true, message: `Đã kích hoạt bài kiểm tra: ${quiz.title}`, quizzes: currentQuizzes, activeQuiz: quiz });
+});
+
+// 8. Admin: Duplicate a Quiz
+app.post('/api/admin/quizzes/:id/duplicate', (req, res) => {
+  const { id } = req.params;
+  const source = currentQuizzes.find((q) => q.id === id);
+  if (!source) {
+    return res.status(404).json({ error: 'Không tìm thấy bài kiểm tra' });
+  }
+
+  const duplicatedQuiz: Quiz = {
+    ...JSON.parse(JSON.stringify(source)),
+    id: `quiz_${Date.now()}_copy`,
+    title: `${source.title} (Bản sao)`,
+    subjectCode: `${source.subjectCode}-B`,
+    isActive: false,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  currentQuizzes.unshift(duplicatedQuiz);
+  writeJSONFile(QUIZZES_FILE, currentQuizzes);
+
+  res.json({ success: true, quiz: duplicatedQuiz, quizzes: currentQuizzes });
+});
+
+// 9. Admin: Delete a Quiz
+app.delete('/api/admin/quizzes/:id', (req, res) => {
+  const { id } = req.params;
+  if (currentQuizzes.length <= 1) {
+    return res.status(400).json({ error: 'Hệ thống phải có ít nhất 1 bài kiểm tra' });
+  }
+
+  const toDelete = currentQuizzes.find((q) => q.id === id);
+  currentQuizzes = currentQuizzes.filter((q) => q.id !== id);
+
+  // If deleted quiz was active, activate the first available
+  if (toDelete?.isActive && currentQuizzes.length > 0) {
+    currentQuizzes[0].isActive = true;
+  }
+
+  writeJSONFile(QUIZZES_FILE, currentQuizzes);
+  res.json({ success: true, quizzes: currentQuizzes });
+});
+
+// ----------------- SUBMISSION & STATS ROUTES ----------------- //
+
+// 10. Admin: Get Submissions & Stats (with optional quiz filter)
+app.get('/api/admin/submissions', (req, res) => {
+  const { quizId } = req.query as { quizId?: string };
+  const stats = calculateStatistics(quizId);
+  const active = getActiveQuiz();
+
+  const filteredSubs = quizId && quizId !== 'ALL'
+    ? currentSubmissions.filter((s) => s.quizId === quizId)
+    : currentSubmissions;
+
+  res.json({
+    submissions: filteredSubs,
+    allSubmissions: currentSubmissions,
+    stats,
+    activeQuiz: active,
+    quizzes: currentQuizzes,
+  });
+});
+
+// 11. Admin: Delete Single Submission
 app.delete('/api/admin/submissions/:id', (req, res) => {
   const { id } = req.params;
   currentSubmissions = currentSubmissions.filter((s) => s.id !== id);
@@ -287,127 +543,33 @@ app.delete('/api/admin/submissions/:id', (req, res) => {
   res.json({ success: true, message: 'Đã xóa kết quả bài thi' });
 });
 
-// 5. Admin: Clear All Submissions
-app.delete('/api/admin/submissions', (_req, res) => {
-  currentSubmissions = [];
+// 12. Admin: Clear Submissions (filtered or all)
+app.delete('/api/admin/submissions', (req, res) => {
+  const { quizId } = req.query as { quizId?: string };
+  if (quizId && quizId !== 'ALL') {
+    currentSubmissions = currentSubmissions.filter((s) => s.quizId !== quizId);
+  } else {
+    currentSubmissions = [];
+  }
   writeJSONFile(SUBMISSIONS_FILE, currentSubmissions);
-  res.json({ success: true, message: 'Đã xóa toàn bộ kết quả bài thi' });
+  res.json({ success: true, message: 'Đã xóa kết quả bài thi thành công' });
 });
 
-// 6. Admin: Get Full Question Bank (with correct answers & explanations)
-app.get('/api/admin/questions', (_req, res) => {
-  res.json({
-    questions: currentQuestions,
-    config: currentConfig,
-  });
-});
+// 13. Admin: Export Submissions to CSV with UTF-8 BOM
+app.get('/api/admin/export-csv', (req, res) => {
+  const { quizId } = req.query as { quizId?: string };
+  const targetSubs = quizId && quizId !== 'ALL'
+    ? currentSubmissions.filter((s) => s.quizId === quizId)
+    : currentSubmissions;
 
-// 7. Admin: Update Whole Question Bank
-app.post('/api/admin/questions', (req, res) => {
-  const { questions } = req.body as { questions: Question[] };
-  if (!Array.isArray(questions) || questions.length === 0) {
-    return res.status(400).json({ error: 'Danh sách câu hỏi không hợp lệ' });
-  }
-
-  currentQuestions = questions.map((q, idx) => ({
-    ...q,
-    id: q.id || `cau-${idx + 1}-${Date.now()}`,
-    orderNumber: idx + 1,
-    timeLimit: q.timeLimit || currentConfig.defaultTimeLimit || 10,
-  }));
-
-  writeJSONFile(QUESTIONS_FILE, currentQuestions);
-  res.json({ success: true, questions: currentQuestions });
-});
-
-// 8. Admin: Add New Question
-app.post('/api/admin/questions/add', (req, res) => {
-  const q = req.body as Partial<Question>;
-  if (!q.questionText || !q.options || q.options.length < 2 || !q.correctOption) {
-    return res.status(400).json({ error: 'Dữ liệu câu hỏi chưa hợp lệ' });
-  }
-
-  const newQuestion: Question = {
-    id: `cau-${Date.now()}`,
-    orderNumber: currentQuestions.length + 1,
-    questionText: q.questionText,
-    options: q.options,
-    correctOption: q.correctOption,
-    explanation: q.explanation || 'Chưa có giải thích chi tiết.',
-    timeLimit: q.timeLimit || currentConfig.defaultTimeLimit || 10,
-    category: q.category || 'Hệ thống điện ô tô',
-  };
-
-  currentQuestions.push(newQuestion);
-  writeJSONFile(QUESTIONS_FILE, currentQuestions);
-  res.json({ success: true, question: newQuestion, questions: currentQuestions });
-});
-
-// 9. Admin: Edit Question
-app.put('/api/admin/questions/:id', (req, res) => {
-  const { id } = req.params;
-  const updatedData = req.body as Partial<Question>;
-  const idx = currentQuestions.findIndex((q) => q.id === id);
-
-  if (idx === -1) {
-    return res.status(404).json({ error: 'Không tìm thấy câu hỏi' });
-  }
-
-  currentQuestions[idx] = {
-    ...currentQuestions[idx],
-    ...updatedData,
-    id,
-    orderNumber: currentQuestions[idx].orderNumber,
-  };
-
-  writeJSONFile(QUESTIONS_FILE, currentQuestions);
-  res.json({ success: true, question: currentQuestions[idx], questions: currentQuestions });
-});
-
-// 10. Admin: Delete Question
-app.delete('/api/admin/questions/:id', (req, res) => {
-  const { id } = req.params;
-  if (currentQuestions.length <= 1) {
-    return res.status(400).json({ error: 'Không thể xóa câu hỏi cuối cùng của đề thi' });
-  }
-
-  currentQuestions = currentQuestions.filter((q) => q.id !== id);
-  // Re-index order numbers
-  currentQuestions.forEach((q, idx) => {
-    q.orderNumber = idx + 1;
-  });
-
-  writeJSONFile(QUESTIONS_FILE, currentQuestions);
-  res.json({ success: true, questions: currentQuestions });
-});
-
-// 11. Admin: Reset Questions to Default 10
-app.post('/api/admin/reset-default', (_req, res) => {
-  currentQuestions = [...DEFAULT_QUESTIONS];
-  writeJSONFile(QUESTIONS_FILE, currentQuestions);
-  res.json({ success: true, message: 'Đã khôi phục 10 câu hỏi chuẩn', questions: currentQuestions });
-});
-
-// 12. Admin: Update Quiz Config
-app.put('/api/admin/config', (req, res) => {
-  const newConfig = req.body as Partial<QuizConfig>;
-  currentConfig = {
-    ...currentConfig,
-    ...newConfig,
-  };
-
-  writeJSONFile(CONFIG_FILE, currentConfig);
-  res.json({ success: true, config: currentConfig });
-});
-
-// 13. Admin: Export Submissions to CSV (UTF-8 with BOM for Excel)
-app.get('/api/admin/export-csv', (_req, res) => {
   const BOM = '\uFEFF';
-  let csv = BOM + 'STT,Mã SV,Họ và Tên,Nhóm / Lớp,Số câu đúng,Tổng số câu,Điểm hệ 10,Tỷ lệ (%),Xếp loại,Thời gian làm (s),Ngày nộp\n';
+  let csv = BOM + 'STT,Mã Môn Học,Tên Bài Kiểm Tra,Mã SV,Họ và Tên,Lớp / Nhóm,Số câu đúng,Tổng số câu,Điểm hệ 10,Tỷ lệ (%),Xếp loại,Thời gian (s),Ngày nộp\n';
 
-  currentSubmissions.forEach((sub, idx) => {
+  targetSubs.forEach((sub, idx) => {
     const row = [
       idx + 1,
+      `"${sub.subjectCode || ''}"`,
+      `"${(sub.quizTitle || '').replace(/"/g, '""')}"`,
       `"${sub.studentInfo.studentId || ''}"`,
       `"${sub.studentInfo.fullName.replace(/"/g, '""')}"`,
       `"${sub.studentInfo.studentGroup.replace(/"/g, '""')}"`,
@@ -422,9 +584,20 @@ app.get('/api/admin/export-csv', (_req, res) => {
     csv += row.join(',') + '\n';
   });
 
+  const filename = quizId && quizId !== 'ALL'
+    ? `Ket_Qua_${quizId}_${Date.now()}.csv`
+    : `Ket_Qua_Tat_Ca_Bai_Kiem_Tra_${Date.now()}.csv`;
+
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-  res.setHeader('Content-Disposition', 'attachment; filename="Ket_Qua_Trac_Nghiem_Dien_O_To_1.csv"');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
   res.send(csv);
+});
+
+// 14. Admin: Reset to Default Quizzes
+app.post('/api/admin/reset-default', (_req, res) => {
+  currentQuizzes = JSON.parse(JSON.stringify(DEFAULT_QUIZZES));
+  writeJSONFile(QUIZZES_FILE, currentQuizzes);
+  res.json({ success: true, message: 'Đã khôi phục ngân hàng bài kiểm tra chuẩn', quizzes: currentQuizzes, activeQuiz: getActiveQuiz() });
 });
 
 // ----------------- START SERVER / VITE INTEGRATION ----------------- //

@@ -5,10 +5,9 @@ import { ActiveQuiz } from './components/ActiveQuiz';
 import { QuizResult } from './components/QuizResult';
 import { LecturerDashboard } from './components/LecturerDashboard';
 import { LecturerLoginModal } from './components/LecturerLoginModal';
-import { Question, QuizConfig, QuizSubmission, QuizStatistics, StudentInfo, OptionKey } from './types';
-import { DEFAULT_QUESTIONS, DEFAULT_QUIZ_CONFIG } from './data/defaultQuestions';
+import { Question, QuizConfig, QuizSubmission, QuizStatistics, StudentInfo, OptionKey, Quiz } from './types';
+import { DEFAULT_QUIZZES, DEFAULT_QUESTIONS, DEFAULT_QUIZ_CONFIG } from './data/defaultQuestions';
 import { soundFX } from './utils/audio';
-import { Loader2, AlertCircle, RefreshCw } from 'lucide-react';
 
 export default function App() {
   // Authentication & Navigation
@@ -26,19 +25,43 @@ export default function App() {
   // Sound preference
   const [soundEnabled, setSoundEnabled] = useState<boolean>(true);
 
-  // Core Data
-  const [config, setConfig] = useState<QuizConfig>(DEFAULT_QUIZ_CONFIG);
-  const [questions, setQuestions] = useState<Question[]>(DEFAULT_QUESTIONS);
+  // Multi-Quiz Data
+  const [quizzes, setQuizzes] = useState<Quiz[]>(DEFAULT_QUIZZES);
+  const [selectedStudentQuizId, setSelectedStudentQuizId] = useState<string>(DEFAULT_QUIZZES[0].id);
+  const [selectedLecturerQuizFilterId, setSelectedLecturerQuizFilterId] = useState<string>('ALL');
+
+  // Current active student taking quiz info
   const [currentStudent, setCurrentStudent] = useState<StudentInfo | null>(null);
   const [latestSubmission, setLatestSubmission] = useState<QuizSubmission | null>(null);
 
-  // Lecturer Data
+  // Lecturer Submissions & Stats
   const [submissions, setSubmissions] = useState<QuizSubmission[]>([]);
+  const [allSubmissions, setAllSubmissions] = useState<QuizSubmission[]>([]);
   const [stats, setStats] = useState<QuizStatistics | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
-  const [fetchError, setFetchError] = useState<string | null>(null);
 
-  // Handle Logout
+  // Derive current student quiz
+  const currentStudentQuiz: Quiz = quizzes.find((q) => q.id === selectedStudentQuizId) 
+    || quizzes.find((q) => q.isActive) 
+    || quizzes[0] 
+    || DEFAULT_QUIZZES[0];
+
+  const currentQuizConfig: QuizConfig = {
+    title: currentStudentQuiz.title,
+    subjectCode: currentStudentQuiz.subjectCode,
+    subjectName: currentStudentQuiz.subjectName,
+    description: currentStudentQuiz.description,
+    defaultTimeLimit: currentStudentQuiz.defaultTimeLimit,
+    passingScorePercentage: currentStudentQuiz.passingScorePercentage,
+    departmentName: currentStudentQuiz.departmentName,
+    shuffleQuestions: false,
+    allowReviewAfterQuiz: true,
+  };
+
+  // Derive active quiz (the one currently marked as isActive)
+  const activeQuiz: Quiz = quizzes.find((q) => q.isActive) || quizzes[0] || DEFAULT_QUIZZES[0];
+
+  // Handle Lecturer Logout
   const handleLecturerLogout = () => {
     try {
       sessionStorage.removeItem('lecturer_auth');
@@ -65,61 +88,53 @@ export default function App() {
     soundFX.setEnabled(next);
   };
 
-  // Fetch Quiz Info & Admin data
+  // Fetch all quizzes, submissions and stats from backend
   const fetchData = useCallback(async () => {
-    setIsLoading(true);
-    setFetchError(null);
     try {
-      // 1. Fetch Quiz Info (Questions & Config)
-      const resInfo = await fetch('/api/quiz/info');
-      if (resInfo.ok) {
-        const infoData = await resInfo.json();
-        if (infoData.config) setConfig(infoData.config);
-        if (infoData.questions && infoData.questions.length > 0) {
-          // If we also have full admin questions loaded, keep them
-          setQuestions((prev) => (prev.length === infoData.questions.length ? prev : infoData.questions));
+      // 1. Fetch Quizzes List
+      const resQuizzes = await fetch('/api/admin/quizzes');
+      if (resQuizzes.ok) {
+        const qData = await resQuizzes.json();
+        if (qData.quizzes && qData.quizzes.length > 0) {
+          setQuizzes(qData.quizzes);
+          // Set student selected quiz if not set or inactive
+          const activeQ = qData.quizzes.find((q: Quiz) => q.isActive);
+          if (activeQ && !selectedStudentQuizId) {
+            setSelectedStudentQuizId(activeQ.id);
+          }
         }
       }
 
-      // 2. Fetch Admin Submissions & Stats
-      const resAdmin = await fetch('/api/admin/submissions');
-      if (resAdmin.ok) {
-        const adminData = await resAdmin.json();
-        setSubmissions(adminData.submissions || []);
-        setStats(adminData.stats || null);
-        if (adminData.config) setConfig(adminData.config);
-      }
-
-      // 3. Fetch Full Admin Question Bank
-      const resQ = await fetch('/api/admin/questions');
-      if (resQ.ok) {
-        const qData = await resQ.json();
-        if (qData.questions && qData.questions.length > 0) {
-          setQuestions(qData.questions);
-        }
+      // 2. Fetch Submissions & Stats
+      const queryParam = selectedLecturerQuizFilterId !== 'ALL' ? `?quizId=${selectedLecturerQuizFilterId}` : '';
+      const resSubmissions = await fetch(`/api/admin/submissions${queryParam}`);
+      if (resSubmissions.ok) {
+        const subData = await resSubmissions.json();
+        setSubmissions(subData.submissions || []);
+        setAllSubmissions(subData.allSubmissions || subData.submissions || []);
+        setStats(subData.stats || null);
       }
     } catch (err) {
-      console.warn('Backend API offline or loading locally:', err);
-      // Fallback to local default state seamlessly
+      console.warn('Backend loading locally:', err);
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [selectedLecturerQuizFilterId, selectedStudentQuizId]);
 
   useEffect(() => {
     fetchData();
 
-    // Set up auto-sync polling every 3 seconds for real-time submission updates
+    // Auto-polling for instantaneous submission sync across student & lecturer tabs
     const pollInterval = setInterval(() => {
       fetchData();
-    }, 3000);
+    }, 2500);
 
     // Cross-tab synchronization via BroadcastChannel
     let channel: BroadcastChannel | null = null;
     try {
       channel = new BroadcastChannel('quiz_sync_channel');
       channel.onmessage = (event) => {
-        if (event.data && event.data.type === 'NEW_SUBMISSION') {
+        if (event.data && (event.data.type === 'NEW_SUBMISSION' || event.data.type === 'QUIZ_UPDATED')) {
           fetchData();
         }
       };
@@ -129,7 +144,7 @@ export default function App() {
 
     // Cross-tab synchronization via storage event
     const handleStorageChange = (e: StorageEvent) => {
-      if (e.key === 'last_quiz_submission_time') {
+      if (e.key === 'last_quiz_submission_time' || e.key === 'last_quiz_config_time') {
         fetchData();
       }
     };
@@ -160,6 +175,7 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          quizId: currentStudentQuiz.id,
           studentInfo: currentStudent,
           answers,
         }),
@@ -168,10 +184,11 @@ export default function App() {
       if (res.ok) {
         const data = await res.json();
         const newSub = data.submission;
-        
-        // 1. Immediately update local state for instantaneous UI response
+
+        // 1. Immediately update local state for instantaneous feedback
         setLatestSubmission(newSub);
         setSubmissions((prev) => [newSub, ...prev.filter((s) => s.id !== newSub.id)]);
+        setAllSubmissions((prev) => [newSub, ...prev.filter((s) => s.id !== newSub.id)]);
         setStudentStage('result');
 
         // 2. Broadcast to other tabs/windows
@@ -207,7 +224,7 @@ export default function App() {
     let correctCount = 0;
     let totalTimeSeconds = 0;
 
-    const evaluatedAnswers = questions.map((q, idx) => {
+    const evaluatedAnswers = currentStudentQuiz.questions.map((q, idx) => {
       const ans = answers.find((a) => a.questionId === q.id);
       const selectedOption = ans ? ans.selectedOption : null;
       const timeSpent = ans ? ans.timeSpentSeconds : q.timeLimit || 10;
@@ -227,7 +244,7 @@ export default function App() {
       };
     });
 
-    const total = questions.length || 10;
+    const total = currentStudentQuiz.questions.length || 10;
     const scoreOutOfTen = Number(((correctCount / total) * 10).toFixed(1));
     const percentage = Math.round((correctCount / total) * 100);
 
@@ -240,6 +257,10 @@ export default function App() {
 
     const localSub: QuizSubmission = {
       id: `sub_${Date.now()}`,
+      quizId: currentStudentQuiz.id,
+      quizTitle: currentStudentQuiz.title,
+      subjectCode: currentStudentQuiz.subjectCode,
+      subjectName: currentStudentQuiz.subjectName,
       studentInfo: currentStudent,
       answers: evaluatedAnswers,
       score: correctCount,
@@ -254,6 +275,7 @@ export default function App() {
 
     setLatestSubmission(localSub);
     setSubmissions((prev) => [localSub, ...prev.filter((s) => s.id !== localSub.id)]);
+    setAllSubmissions((prev) => [localSub, ...prev.filter((s) => s.id !== localSub.id)]);
     setStudentStage('result');
 
     try {
@@ -267,80 +289,128 @@ export default function App() {
     setStudentStage('register');
   };
 
-  // Lecturer Handlers:
+  // Quiz Management API Handlers:
+  const handleActivateQuiz = async (quizId: string): Promise<boolean> => {
+    try {
+      const res = await fetch(`/api/admin/quizzes/${quizId}/activate`, { method: 'POST' });
+      if (res.ok) {
+        setSelectedStudentQuizId(quizId);
+        await fetchData();
+        broadcastQuizUpdate();
+        return true;
+      }
+    } catch (err) {
+      console.error('Error activating quiz:', err);
+    }
+    return false;
+  };
+
+  const handleCreateQuiz = async (quizData: Partial<Quiz>): Promise<boolean> => {
+    try {
+      const res = await fetch('/api/admin/quizzes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(quizData),
+      });
+      if (res.ok) {
+        await fetchData();
+        broadcastQuizUpdate();
+        return true;
+      }
+    } catch (err) {
+      console.error('Error creating quiz:', err);
+    }
+    return false;
+  };
+
+  const handleUpdateQuiz = async (quizId: string, quizData: Partial<Quiz>): Promise<boolean> => {
+    try {
+      const res = await fetch(`/api/admin/quizzes/${quizId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(quizData),
+      });
+      if (res.ok) {
+        await fetchData();
+        broadcastQuizUpdate();
+        return true;
+      }
+    } catch (err) {
+      console.error('Error updating quiz:', err);
+    }
+    return false;
+  };
+
+  const handleDuplicateQuiz = async (quizId: string): Promise<boolean> => {
+    try {
+      const res = await fetch(`/api/admin/quizzes/${quizId}/duplicate`, { method: 'POST' });
+      if (res.ok) {
+        await fetchData();
+        broadcastQuizUpdate();
+        return true;
+      }
+    } catch (err) {
+      console.error('Error duplicating quiz:', err);
+    }
+    return false;
+  };
+
+  const handleDeleteQuiz = async (quizId: string): Promise<boolean> => {
+    try {
+      const res = await fetch(`/api/admin/quizzes/${quizId}`, { method: 'DELETE' });
+      if (res.ok) {
+        await fetchData();
+        broadcastQuizUpdate();
+        return true;
+      }
+    } catch (err) {
+      console.error('Error deleting quiz:', err);
+    }
+    return false;
+  };
+
   const handleDeleteSubmission = async (id: string) => {
     try {
       await fetch(`/api/admin/submissions/${id}`, { method: 'DELETE' });
       setSubmissions((prev) => prev.filter((s) => s.id !== id));
+      setAllSubmissions((prev) => prev.filter((s) => s.id !== id));
       fetchData();
     } catch (err) {
       console.error(err);
     }
   };
 
-  const handleClearAllSubmissions = async () => {
+  const handleClearAllSubmissions = async (quizId?: string) => {
     try {
-      await fetch('/api/admin/submissions', { method: 'DELETE' });
-      setSubmissions([]);
+      const queryParam = quizId && quizId !== 'ALL' ? `?quizId=${quizId}` : '';
+      await fetch(`/api/admin/submissions${queryParam}`, { method: 'DELETE' });
       fetchData();
     } catch (err) {
       console.error(err);
     }
   };
 
-  const handleUpdateQuestions = async (newQuestions: Question[]): Promise<boolean> => {
-    try {
-      const res = await fetch('/api/admin/questions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ questions: newQuestions }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setQuestions(data.questions);
-        fetchData();
-        return true;
-      }
-    } catch (err) {
-      console.error('Error updating questions:', err);
-    }
-    setQuestions(newQuestions);
-    return true;
-  };
-
-  const handleResetDefaultQuestions = async (): Promise<boolean> => {
+  const handleResetDefaultQuizzes = async (): Promise<boolean> => {
     try {
       const res = await fetch('/api/admin/reset-default', { method: 'POST' });
       if (res.ok) {
-        const data = await res.json();
-        setQuestions(data.questions);
-        fetchData();
+        await fetchData();
+        broadcastQuizUpdate();
         return true;
       }
     } catch (err) {
-      console.error('Error resetting questions:', err);
+      console.error('Error resetting default quizzes:', err);
     }
-    setQuestions([...DEFAULT_QUESTIONS]);
-    return true;
+    return false;
   };
 
-  const handleUpdateConfig = async (newConfig: Partial<QuizConfig>): Promise<boolean> => {
+  const broadcastQuizUpdate = () => {
     try {
-      const res = await fetch('/api/admin/config', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newConfig),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setConfig(data.config);
-        return true;
-      }
-    } catch (err) {
-      console.error('Error updating config:', err);
-    }
-    setConfig((prev) => ({ ...prev, ...newConfig }));
-    return true;
+      localStorage.setItem('last_quiz_config_time', Date.now().toString());
+      const channel = new BroadcastChannel('quiz_sync_channel');
+      channel.postMessage({ type: 'QUIZ_UPDATED' });
+      channel.close();
+    } catch {}
   };
 
   return (
@@ -357,7 +427,7 @@ export default function App() {
         }}
         soundEnabled={soundEnabled}
         onToggleSound={handleToggleSound}
-        submissionCount={submissions.length}
+        submissionCount={allSubmissions.length}
         isLecturerAuthenticated={isLecturerAuthenticated}
         onOpenLoginModal={() => setShowLoginModal(true)}
         onLogout={handleLecturerLogout}
@@ -369,15 +439,25 @@ export default function App() {
           <>
             {studentStage === 'register' && (
               <StudentRegister
-                config={config}
-                totalQuestions={questions.length}
+                config={currentQuizConfig}
+                totalQuestions={currentStudentQuiz.questions.length}
+                availableQuizzes={quizzes.map((q) => ({
+                  id: q.id,
+                  title: q.title,
+                  subjectCode: q.subjectCode,
+                  subjectName: q.subjectName,
+                  questionCount: q.questions.length,
+                  isActive: q.isActive,
+                }))}
+                selectedQuizId={selectedStudentQuizId}
+                onSelectQuiz={(id) => setSelectedStudentQuizId(id)}
                 onStartQuiz={handleStartQuiz}
               />
             )}
 
             {studentStage === 'active' && currentStudent && (
               <ActiveQuiz
-                questions={questions}
+                questions={currentStudentQuiz.questions}
                 studentInfo={currentStudent}
                 onFinishQuiz={handleFinishQuiz}
               />
@@ -400,16 +480,22 @@ export default function App() {
         ) : (
           <LecturerDashboard
             submissions={submissions}
+            allSubmissions={allSubmissions}
             stats={stats}
-            questions={questions}
-            config={config}
+            quizzes={quizzes}
+            activeQuiz={activeQuiz}
             isLoading={isLoading}
             onRefreshData={fetchData}
+            onSelectQuizFilter={(id) => setSelectedLecturerQuizFilterId(id)}
+            selectedQuizFilterId={selectedLecturerQuizFilterId}
+            onActivateQuiz={handleActivateQuiz}
+            onCreateQuiz={handleCreateQuiz}
+            onUpdateQuiz={handleUpdateQuiz}
+            onDuplicateQuiz={handleDuplicateQuiz}
+            onDeleteQuiz={handleDeleteQuiz}
             onDeleteSubmission={handleDeleteSubmission}
             onClearAllSubmissions={handleClearAllSubmissions}
-            onUpdateQuestions={handleUpdateQuestions}
-            onResetDefaultQuestions={handleResetDefaultQuestions}
-            onUpdateConfig={handleUpdateConfig}
+            onResetDefaultQuizzes={handleResetDefaultQuizzes}
             onLogout={handleLecturerLogout}
           />
         )}

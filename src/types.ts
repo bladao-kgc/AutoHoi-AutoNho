@@ -17,6 +17,7 @@ export interface Question {
 }
 
 export interface QuizConfig {
+  id?: string;
   title: string;
   subjectCode: string;
   subjectName: string;
@@ -25,6 +26,24 @@ export interface QuizConfig {
   passingScorePercentage: number; // 50%
   shuffleQuestions: boolean;
   allowReviewAfterQuiz: boolean;
+  departmentName?: string;
+}
+
+export interface Quiz {
+  id: string;
+  title: string;
+  subjectCode: string;
+  subjectName: string;
+  description: string;
+  defaultTimeLimit: number;
+  passingScorePercentage: number;
+  shuffleQuestions: boolean;
+  allowReviewAfterQuiz: boolean;
+  departmentName: string;
+  isActive: boolean; // Currently active for student examination
+  createdAt: string;
+  updatedAt: string;
+  questions: Question[];
 }
 
 export interface StudentInfo {
@@ -46,6 +65,10 @@ export interface StudentAnswer {
 
 export interface QuizSubmission {
   id: string;
+  quizId: string;
+  quizTitle: string;
+  subjectCode: string;
+  subjectName: string;
   studentInfo: StudentInfo;
   answers: StudentAnswer[];
   score: number; // e.g., 8 (number of correct answers)
@@ -59,6 +82,7 @@ export interface QuizSubmission {
 }
 
 export interface QuizStatistics {
+  quizId?: string;
   totalSubmissions: number;
   averageScoreOutOfTen: number;
   passRatePercentage: number;
@@ -79,3 +103,4 @@ export interface QuizStatistics {
     optionDistribution: Record<OptionKey, number>;
   }[];
 }
+

@@ -49,7 +49,7 @@ export const QuizResult: React.FC<QuizResultProps> = ({
                   Kết quả hoàn thành
                 </span>
                 <span className="text-[10px] text-slate-400 font-mono">
-                  OT1-2024 • {new Date(submission.submittedAt).toLocaleTimeString('vi-VN')}
+                  {submission.subjectCode || 'CNOT-2026'} • {submission.quizTitle || 'Điện Ô Tô'} • {new Date(submission.submittedAt).toLocaleTimeString('vi-VN')}
                 </span>
               </div>
               <h2 className="text-lg sm:text-xl font-bold tracking-tight text-white">
@@ -58,6 +58,7 @@ export const QuizResult: React.FC<QuizResultProps> = ({
               <p className="text-xs text-slate-300 mt-0.5">
                 Nhóm học: <span className="font-semibold text-blue-400">{studentInfo.studentGroup}</span>
                 {studentInfo.studentId && <span className="text-slate-400"> • MSSV: {studentInfo.studentId}</span>}
+                <span className="text-slate-400"> • Đã lưu vĩnh viễn vào hệ thống GV</span>
               </p>
             </div>
 

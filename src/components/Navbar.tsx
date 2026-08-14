@@ -44,7 +44,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                 </span>
               </div>
               <h1 className="text-xs sm:text-sm font-semibold text-slate-200 tracking-tight flex items-center gap-1.5">
-                Hệ Thống Kiểm Tra: Điện Ô Tô 1
+                Ơ! BÀI NÀY HỌC RỒI MÀ ☝️
               </h1>
             </div>
           </div>

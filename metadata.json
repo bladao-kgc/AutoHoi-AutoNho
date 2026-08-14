@@ -1,6 +1,6 @@
 {
   "name": "Hệ Thống Trắc Nghiệm Điện Ô Tô 1",
-  "description": "Hệ thống thi trắc nghiệm trực tuyến môn Hệ Thống Điện Ô Tô 1 với tính năng đếm ngược 10 giây/câu, lưu trữ kết quả và bảng điều khiển quản trị cho Giảng viên.",
+  "description": "Hệ thống thi trắc nghiệm trực tuyến 10s môn học Khoa Cơ khí - Xây dựng với tính năng quản lý tạo/sửa đề thi, lưu trữ vĩnh viễn kết quả theo bài kiểm tra môn học và bảng điều khiển Giảng viên trực tiếp.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
