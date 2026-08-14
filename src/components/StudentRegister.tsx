@@ -52,10 +52,10 @@ export const StudentRegister: React.FC<StudentRegisterProps> = ({
                 Đang diễn ra
               </span>
               <span className="text-[10px] text-blue-400 font-mono font-bold tracking-widest bg-blue-950/60 px-2 py-0.5 rounded border border-blue-800/40">
-                {config.subjectCode || 'OT1-2024'}
+                {config.subjectCode || 'CNOT-2026'}
               </span>
               <span className="text-xs text-slate-400 font-medium hidden sm:inline">
-                Bộ Môn Điện Ô Tô
+                Khoa Cơ khí - Xây dựng
               </span>
             </div>
             <h2 className="text-lg sm:text-xl font-bold text-white tracking-tight">
@@ -66,7 +66,7 @@ export const StudentRegister: React.FC<StudentRegisterProps> = ({
           <div className="flex items-center gap-4 text-right">
             <div className="bg-slate-800 px-3 py-2 rounded-lg border border-slate-700 text-left sm:text-right">
               <div className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold">Mã phòng thi</div>
-              <div className="text-sm font-mono font-bold text-blue-400 tracking-widest">OT1-2024</div>
+              <div className="text-sm font-mono font-bold text-blue-400 tracking-widest">{config.subjectCode || 'CNOT-2026'}</div>
             </div>
           </div>
         </div>

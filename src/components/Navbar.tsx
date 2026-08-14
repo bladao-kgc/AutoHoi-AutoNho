@@ -36,11 +36,11 @@ export const Navbar: React.FC<NavbarProps> = ({
               <div className="flex items-center gap-2">
                 <span className="text-xs font-bold tracking-tight text-blue-400">AUTO-ED PRO</span>
                 <span className="text-[10px] text-slate-400 uppercase tracking-widest hidden sm:inline border-l border-slate-800 pl-2">
-                  Bộ Môn Điện Ô Tô
+                  AUTO HỎI - AUTO NHỚ
                 </span>
                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/20 text-[10px] font-bold uppercase tracking-wider">
                   <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse"></span>
-                  OT1-2024
+                  CNOT-2026
                 </span>
               </div>
               <h1 className="text-xs sm:text-sm font-semibold text-slate-200 tracking-tight flex items-center gap-1.5">

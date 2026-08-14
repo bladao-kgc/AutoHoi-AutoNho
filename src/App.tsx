@@ -108,6 +108,38 @@ export default function App() {
 
   useEffect(() => {
     fetchData();
+
+    // Set up auto-sync polling every 3 seconds for real-time submission updates
+    const pollInterval = setInterval(() => {
+      fetchData();
+    }, 3000);
+
+    // Cross-tab synchronization via BroadcastChannel
+    let channel: BroadcastChannel | null = null;
+    try {
+      channel = new BroadcastChannel('quiz_sync_channel');
+      channel.onmessage = (event) => {
+        if (event.data && event.data.type === 'NEW_SUBMISSION') {
+          fetchData();
+        }
+      };
+    } catch {
+      // BroadcastChannel not supported in some environments
+    }
+
+    // Cross-tab synchronization via storage event
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === 'last_quiz_submission_time') {
+        fetchData();
+      }
+    };
+    window.addEventListener('storage', handleStorageChange);
+
+    return () => {
+      clearInterval(pollInterval);
+      if (channel) channel.close();
+      window.removeEventListener('storage', handleStorageChange);
+    };
   }, [fetchData]);
 
   // Handle Start Quiz from Student Registration
@@ -135,10 +167,25 @@ export default function App() {
 
       if (res.ok) {
         const data = await res.json();
-        setLatestSubmission(data.submission);
+        const newSub = data.submission;
+        
+        // 1. Immediately update local state for instantaneous UI response
+        setLatestSubmission(newSub);
+        setSubmissions((prev) => [newSub, ...prev.filter((s) => s.id !== newSub.id)]);
         setStudentStage('result');
-        // Refresh admin data in background
-        fetchData();
+
+        // 2. Broadcast to other tabs/windows
+        try {
+          localStorage.setItem('last_quiz_submission_time', Date.now().toString());
+          const channel = new BroadcastChannel('quiz_sync_channel');
+          channel.postMessage({ type: 'NEW_SUBMISSION', submission: newSub });
+          channel.close();
+        } catch {
+          // ignore
+        }
+
+        // 3. Refresh admin data and stats immediately from backend
+        await fetchData();
       } else {
         // Fallback local evaluation if backend has issues
         evaluateLocally(answers);
@@ -206,8 +253,12 @@ export default function App() {
     };
 
     setLatestSubmission(localSub);
-    setSubmissions((prev) => [localSub, ...prev]);
+    setSubmissions((prev) => [localSub, ...prev.filter((s) => s.id !== localSub.id)]);
     setStudentStage('result');
+
+    try {
+      localStorage.setItem('last_quiz_submission_time', Date.now().toString());
+    } catch {}
   };
 
   // Retake Quiz
@@ -376,7 +427,7 @@ export default function App() {
         <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             <span className="text-blue-400 font-bold text-[11px] tracking-tight">AUTO-ED PRO</span>
-            <span className="text-[10px] text-slate-500 uppercase tracking-wider">• Khoa Công Nghệ Ô Tô • Bộ Môn Điện Ô Tô</span>
+            <span className="text-[10px] text-slate-500 uppercase tracking-wider">• Khoa Cơ khí - Xây dựng</span>
           </div>
           <div className="flex items-center gap-3">
             {!isLecturerAuthenticated ? (
@@ -392,7 +443,7 @@ export default function App() {
                 GV: Bladao (Đang đăng nhập)
               </span>
             )}
-            <p className="text-[11px] text-slate-500 font-mono">Phiên bản Kiểm tra Trực tuyến 10s • KGC-2024</p>
+            <p className="text-[11px] text-slate-500 font-mono">Phiên bản Kiểm tra Trực tuyến 10s • KGC-2026</p>
           </div>
         </div>
       </footer>
